@@ -381,7 +381,87 @@ col.on('collect', msg => {
 });
 
  col.on('end', async (_, reason) => {
-            if (reason !== 'ok') return interaction.channel.send('⏱ انتهى الوقت');
+            if (reason !== 'ok') {
+              await interaction.channel.send('⏱ انتهى الوقت، سيتم طرح سؤال آخر بنفس الحرف.');
+              const newQuestion = qarr[Math.floor(Math.random() * qarr.length)];
+              await interaction.channel.send({
+                embeds: [new EmbedBuilder().setTitle(`❓ سؤال جديد على الحرف: ${letter}`).setDescription(newQuestion.question)]
+              });
+
+              const newCol = interaction.channel.createMessageCollector({ time: 30000 });
+              newCol.on('collect', msg => {
+                if (msg.author.bot) return;
+                if (msg.content.trim().startsWith(newQuestion.answer)) {
+                  const team = game.teamA.includes(msg.author.id) ? 'green' : game.teamB.includes(msg.author.id) ? 'red' : null;
+                  if (!team) return;
+                  game.owner[pos.y][pos.x] = team;
+                  game.nextLeader = team === 'green' ? game.leaderA : game.leaderB;
+                  newCol.stop('ok');
+                  msg.react('✅');
+                }
+              });
+
+              newCol.on('end', async (_, newReason) => {
+                if (newReason !== 'ok') {
+                  await interaction.channel.send('⏱ انتهى الوقت مرة أخرى، اللعبة مستمرة.');
+                  return;
+                }
+
+                const buffer = await renderBoard(game.board, game.owner);
+                await interaction.channel.send({ files: [new AttachmentBuilder(buffer, { name: 'board.png' })] });
+                const win = checkWinner(game.owner);
+                if (win) {
+                  await interaction.channel.send(`🎉 فريق ${win === 'green' ? 'الأخضر' : 'الأحمر'} فاز!`);
+                  games.delete(interaction.channel.id);
+                  isAnyGameRunning = false;
+                } else {
+                  const rows = [];
+                  game.board.flat().forEach((ltr, i) => {
+                    if (i % 5 === 0) rows.push(new ActionRowBuilder());
+                    const y = Math.floor(i / 5);
+                    const x = i % 5;
+                    const owner = game.owner[y][x];
+                    const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+                    const disabled = !!owner;
+                    rows[rows.length - 1].addComponents(
+                      new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+                    );
+                  });
+                  const msg = await interaction.channel.send({ content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
+                  game.letterPicked = false;
+                  game.letterMessage = msg;
+                  game.leaderTimeout = setTimeout(async () => {
+                    const stillGame = games.get(interaction.channel.id);
+                    if (!stillGame || stillGame.letterPicked) return;
+                    const team = stillGame.nextLeader === stillGame.leaderA ? 'teamA' : 'teamB';
+                    const newCandidates = stillGame[team].filter(id => id !== stillGame.nextLeader);
+                    if (newCandidates.length === 0) {
+                      await interaction.channel.send(`❌ لا يوجد لاعبين يمكن تعيينهم كقائد جديد لفريق ${team === 'teamA' ? 'الأخضر' : 'الأحمر'}.`);
+                      return;
+                    }
+                    const newLeader = newCandidates[Math.floor(Math.random() * newCandidates.length)];
+                    stillGame.nextLeader = newLeader;
+                    stillGame[team === 'teamA' ? 'leaderA' : 'leaderB'] = newLeader;
+                    await interaction.channel.send(`⏱ القائد السابق لم يختر حرفًا خلال 30 ثانية. تم تعيين <@${interaction.guild.members.cache.get(newLeader)?.user.id}> كقائد جديد.`);
+                    const newRows = [];
+                    game.board.flat().forEach((ltr, i) => {
+                      if (i % 5 === 0) newRows.push(new ActionRowBuilder());
+                      const y = Math.floor(i / 5);
+                      const x = i % 5;
+                      const owner = game.owner[y][x];
+                      const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+                      const disabled = !!owner;
+                      newRows[newRows.length - 1].addComponents(
+                        new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+                      );
+                    });
+                    await stillGame.letterMessage.edit({content: `✅ <@${interaction.guild.members.cache.get(stillGame.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: newRows });
+                    stillGame.letterPicked = false;
+                  }, 30000);
+                }
+              });
+              return;
+            }
             const buffer = await renderBoard(game.board, game.owner);
             await interaction.channel.send({ files: [new AttachmentBuilder(buffer, { name: 'board.png' })] });
             const win = checkWinner(game.owner);
@@ -402,13 +482,13 @@ col.on('collect', msg => {
                   new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
                 );
               });
-    const msg =               await interaction.channel.send({ content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
-
+    const msg = await interaction.channel.send({ content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
 
     game.letterPicked = false;
     game.letterMessage = msg;
 
-    setTimeout(async () => {
+    if (game.leaderTimeout) clearTimeout(game.leaderTimeout);
+    game.leaderTimeout = setTimeout(async () => {
       const stillGame = games.get(interaction.channel.id);
       if (!stillGame || stillGame.letterPicked) return;
 
@@ -425,22 +505,20 @@ col.on('collect', msg => {
       stillGame[team === 'teamA' ? 'leaderA' : 'leaderB'] = newLeader;
 
       await interaction.channel.send(`⏱ القائد السابق لم يختر حرفًا خلال 30 ثانية. تم تعيين <@${interaction.guild.members.cache.get(newLeader)?.user.id}> كقائد جديد.`);
-const rows = [];
-              game.board.flat().forEach((ltr, i) => {
-                if (i % 5 === 0) rows.push(new ActionRowBuilder());
-                const y = Math.floor(i / 5);
-                const x = i % 5;
-                const owner = game.owner[y][x];
-                const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
-                const disabled = !!owner;
-                rows[rows.length - 1].addComponents(
-                  new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
-                );
-              });
-      await stillGame.letterMessage.edit({content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
-
+      const newRows = [];
+      game.board.flat().forEach((ltr, i) => {
+        if (i % 5 === 0) newRows.push(new ActionRowBuilder());
+        const y = Math.floor(i / 5);
+        const x = i % 5;
+        const owner = game.owner[y][x];
+        const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+        const disabled = !!owner;
+        newRows[newRows.length - 1].addComponents(
+          new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+        );
+      });
+      await stillGame.letterMessage.edit({content: `✅ <@${interaction.guild.members.cache.get(stillGame.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: newRows });
       stillGame.letterPicked = false;
-
     }, 30000);
   }
 });
@@ -465,6 +543,10 @@ const rows = [];
       return interaction.reply({ content: '❗ هذا الحرف تم اختياره مسبقًا.', ephemeral: true });
 
     game.letterPicked = true;
+    if (game.leaderTimeout) {
+      clearTimeout(game.leaderTimeout);
+      game.leaderTimeout = null;
+    }
 
     const qarr = questions[letter] || [];
     if (!qarr.length)
@@ -487,7 +569,89 @@ const rows = [];
     });
 
     col.on('end', async (_, reason) => {
-      if (reason !== 'ok') return interaction.channel.send('⏱ انتهى الوقت، لم يتم حل السؤال.');
+      if (reason !== 'ok') {
+        await interaction.channel.send('⏱ انتهى الوقت، سيتم طرح سؤال آخر بنفس الحرف.');
+        const newQuestion = qarr[Math.floor(Math.random() * qarr.length)];
+        await interaction.channel.send({ embeds: [new EmbedBuilder().setTitle(`❓ سؤال جديد على الحرف: ${letter}`).setDescription(newQuestion.question)] });
+
+        const newCol = interaction.channel.createMessageCollector({ time: 30000 });
+        newCol.on('collect', msg => {
+          if (msg.author.bot) return;
+          if (msg.content.trim().startsWith(newQuestion.answer)) {
+            const team = game.teamA.includes(msg.author.id) ? 'green' : game.teamB.includes(msg.author.id) ? 'red' : null;
+            if (!team) return;
+            game.owner[pos.y][pos.x] = team;
+            game.nextLeader = team === 'green' ? game.leaderA : game.leaderB;
+            newCol.stop('ok');
+            msg.react('✅');
+          }
+        });
+
+        newCol.on('end', async (_, newReason) => {
+          if (newReason !== 'ok') {
+            await interaction.channel.send('⏱ انتهى الوقت مرة أخرى، اللعبة مستمرة.');
+            return;
+          }
+
+          const buffer = await renderBoard(game.board, game.owner);
+          await interaction.channel.send({ files: [new AttachmentBuilder(buffer, { name: 'board.png' })] });
+
+          const win = checkWinner(game.owner);
+          if (win) {
+            await interaction.channel.send(`🎉 فريق ${win === 'green' ? 'الأخضر' : 'الأحمر'} فاز!`);
+            games.delete(interaction.channel.id);
+            isAnyGameRunning = false;
+          } else {
+            const rows = [];
+            game.board.flat().forEach((ltr, i) => {
+              if (i % 5 === 0) rows.push(new ActionRowBuilder());
+              const y = Math.floor(i / 5);
+              const x = i % 5;
+              const owner = game.owner[y][x];
+              const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+              const disabled = !!owner;
+              rows[rows.length - 1].addComponents(
+                new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+              );
+            });
+            const msg = await interaction.channel.send({content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
+            game.letterPicked = false;
+            game.letterMessage = msg;
+
+            if (game.leaderTimeout) clearTimeout(game.leaderTimeout);
+            game.leaderTimeout = setTimeout(async () => {
+              const stillGame = games.get(interaction.channel.id);
+              if (!stillGame || stillGame.letterPicked) return;
+              const team = stillGame.nextLeader === stillGame.leaderA ? 'teamA' : 'teamB';
+              const newCandidates = stillGame[team].filter(id => id !== stillGame.nextLeader);
+              if (newCandidates.length === 0) {
+                await interaction.channel.send(`❌ لا يوجد لاعبين يمكن تعيينهم كقائد جديد لفريق ${team === 'teamA' ? 'الأخضر' : 'الأحمر'}.`);
+                return;
+              }
+              const newLeader = newCandidates[Math.floor(Math.random() * newCandidates.length)];
+              stillGame.nextLeader = newLeader;
+              stillGame[team === 'teamA' ? 'leaderA' : 'leaderB'] = newLeader;
+              await interaction.channel.send(`⏱ القائد السابق لم يختر حرفًا. تم اختيار قائد جديد عشوائيًا: <${interaction.guild.members.cache.get(newLeader)?.user.id}>`);
+              const newRows = [];
+              game.board.flat().forEach((ltr, i) => {
+                if (i % 5 === 0) newRows.push(new ActionRowBuilder());
+                const y = Math.floor(i / 5);
+                const x = i % 5;
+                const owner = game.owner[y][x];
+                const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+                const disabled = !!owner;
+                newRows[newRows.length - 1].addComponents(
+                  new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+                );
+              });
+              const newMsg = await interaction.channel.send({content: `✅ <${interaction.guild.members.cache.get(stillGame.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: newRows });
+              stillGame.letterMessage = newMsg;
+              stillGame.letterPicked = false;
+            }, 30000);
+          }
+        });
+        return;
+      }
       const buffer = await renderBoard(game.board, game.owner);
       await interaction.channel.send({ files: [new AttachmentBuilder(buffer, { name: 'board.png' })] });
 
@@ -511,42 +675,43 @@ const rows = [];
               });
         const msg = await interaction.channel.send({content: `✅ <@${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
 
-game.letterPicked = false; 
+        game.letterPicked = false;
+        game.letterMessage = msg;
 
-setTimeout(async () => {
-  const stillGame = games.get(interaction.channel.id);
-  if (!stillGame || stillGame.letterPicked) return;
+        if (game.leaderTimeout) clearTimeout(game.leaderTimeout);
+        game.leaderTimeout = setTimeout(async () => {
+          const stillGame = games.get(interaction.channel.id);
+          if (!stillGame || stillGame.letterPicked) return;
 
-  const team = stillGame.nextLeader === stillGame.leaderA ? 'teamA' : 'teamB';
-  const newCandidates = stillGame[team].filter(id => id !== stillGame.nextLeader);
+          const team = stillGame.nextLeader === stillGame.leaderA ? 'teamA' : 'teamB';
+          const newCandidates = stillGame[team].filter(id => id !== stillGame.nextLeader);
 
-  if (newCandidates.length === 0) {
-    await interaction.channel.send(`❌ لا يوجد لاعبين يمكن تعيينهم كقائد جديد لفريق ${team === 'teamA' ? 'الأخضر' : 'الأحمر'}.`);
-    return;
-  }
+          if (newCandidates.length === 0) {
+            await interaction.channel.send(`❌ لا يوجد لاعبين يمكن تعيينهم كقائد جديد لفريق ${team === 'teamA' ? 'الأخضر' : 'الأحمر'}.`);
+            return;
+          }
 
-  const newLeader = newCandidates[Math.floor(Math.random() * newCandidates.length)];
-  stillGame.nextLeader = newLeader;
-  stillGame[team === 'teamA' ? 'leaderA' : 'leaderB'] = newLeader;
+          const newLeader = newCandidates[Math.floor(Math.random() * newCandidates.length)];
+          stillGame.nextLeader = newLeader;
+          stillGame[team === 'teamA' ? 'leaderA' : 'leaderB'] = newLeader;
 
-  await interaction.channel.send(`⏱ القائد السابق لم يختر حرفًا. تم اختيار قائد جديد عشوائيًا: <${interaction.guild.members.cache.get(newLeader)?.user.id}>`);
+          await interaction.channel.send(`⏱ القائد السابق لم يختر حرفًا. تم اختيار قائد جديد عشوائيًا: <@${interaction.guild.members.cache.get(newLeader)?.user.id}>`);
 
-const rows = [];
-              game.board.flat().forEach((ltr, i) => {
-                if (i % 5 === 0) rows.push(new ActionRowBuilder());
-                const y = Math.floor(i / 5);
-                const x = i % 5;
-                const owner = game.owner[y][x];
-                const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
-                const disabled = !!owner;
-                rows[rows.length - 1].addComponents(
-                  new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
-                );
-              });
-  const newMsg = await interaction.channel.send({content: `✅ <${interaction.guild.members.cache.get(game.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: rows });
-
-  stillGame.messages.push(newMsg.id);
-}, 60000);
+          const newRows = [];
+          game.board.flat().forEach((ltr, i) => {
+            if (i % 5 === 0) newRows.push(new ActionRowBuilder());
+            const y = Math.floor(i / 5);
+            const x = i % 5;
+            const owner = game.owner[y][x];
+            const style = owner === 'green' ? ButtonStyle.Success : owner === 'red' ? ButtonStyle.Danger : ButtonStyle.Primary;
+            const disabled = !!owner;
+            newRows[newRows.length - 1].addComponents(
+              new ButtonBuilder().setCustomId(`choose_${ltr}`).setLabel(ltr).setStyle(style).setDisabled(disabled)
+            );
+          });
+          await stillGame.letterMessage.edit({content: `✅ <@${interaction.guild.members.cache.get(stillGame.nextLeader)?.user.id}> فقط يمكنك اختيار الحرف التالي`, components: newRows });
+          stillGame.letterPicked = false;
+        }, 30000);
 
       }
     });
